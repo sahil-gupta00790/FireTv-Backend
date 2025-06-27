@@ -1,0 +1,78 @@
+  version: '3.8'
+
+  services:
+    app:
+      
+      build:
+        context: .
+        dockerfile: Dockerfile
+        args:
+          - VERSION=local-dev
+          - BUILD_TIME=2025-06-26T19:37:00Z
+          - GIT_COMMIT=local
+      ports:
+        - "8080:8080"
+      environment:
+        - REDIS_ADDR=redis:6379
+        - ENVIRONMENT=development
+        - LOG_LEVEL=debug
+        - MAX_CONNECTIONS=10000  # Reduced for local testing
+        - CONNECTIONS_PER_TASK=1000
+        - DYNAMODB_ENDPOINT=http://host.docker.internal:8000
+        - AWS_REGION=us-east-1
+        - AWS_ACCESS_KEY_ID=dummyKey123
+        - AWS_SECRET_ACCESS_KEY=dummySecret123  # Local DynamoDB
+      depends_on:
+        - redis
+        - dynamodb-local
+      volumes:
+        - .:/app  # For hot reloading during development
+      networks:
+        - fire-tv-network
+
+    redis:
+      image: redis:7.0-alpine
+      ports:
+        - "6379:6379"
+      command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+      volumes:
+        - redis_data:/data
+      networks:
+        - fire-tv-network
+
+    # Local DynamoDB for testing[10]
+    dynamodb-local:
+      image: amazon/dynamodb-local:latest
+      ports:
+        - "8000:8000"
+      command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+      networks:
+        - fire-tv-network
+
+    # Redis Commander for debugging
+    redis-commander:
+      image: rediscommander/redis-commander:latest
+      environment:
+        - REDIS_HOSTS=local:redis:6379
+      ports:
+        - "8081:8081"
+      depends_on:
+        - redis
+      networks:
+        - fire-tv-network
+
+    # Load testing tool
+    load-tester:
+      image: williamyeh/wrk
+      command: sleep infinity
+      networks:
+        - fire-tv-network
+      profiles:
+        - testing
+
+  volumes:
+    redis_data:
+
+  networks:
+    fire-tv-network:
+      driver: bridge

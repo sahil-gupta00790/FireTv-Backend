@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Fire TV Rooms WebRTC Test</title>
+  <style>
+    video { 
+      background: black; 
+      border: 1px solid gray; 
+      border-radius: 8px;
+    }
+    .video-container { 
+      display: flex; 
+      gap: 20px; 
+      margin: 20px 0; 
+    }
+  </style>
+</head>
+<body>
+  <h2>Fire TV Rooms Voice & Video Chat Test</h2>
+  <p>User: <span id="userInfo"></span></p>
+  <button id="startCall">Start Video Call</button>
+  <button id="hangup" disabled>Hang Up</button>
+
+  <div class="video-container">
+    <div>
+      <h3>Local Video</h3>
+      <video id="localVideo" autoplay muted playsinline width="300" controls></video>
+    </div>
+    <div>
+      <h3>Remote Video</h3>
+      <video id="remoteVideo" autoplay playsinline width="300" controls></video>
+    </div>
+  </div>
+
+  <div id="status">Disconnected</div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const userId = params.get('user_id') || prompt("Enter user ID (test1 or test2):");
+    const deviceId = params.get('device_id') || `device_${userId}`;
+    const roomId = 'a2afcd86-f312-482b-83e9-1dec3f6589c2';
+    const token = 'test-token';
+    const isOfferer = userId === 'test1';
+    const targetId = isOfferer ? 'test2' : 'test1';
+
+    document.getElementById('userInfo').textContent = `${userId} (${isOfferer ? 'Caller' : 'Receiver'})`;
+
+    const ws = new WebSocket(`ws://localhost:8080/ws?user_id=${userId}&room_id=${roomId}&device_id=${deviceId}&platform=web&token=${token}`);
+
+    let localStream;
+    let peerConnection;
+
+    ws.onopen = () => {
+      document.getElementById('status').textContent = 'Connected to server';
+      console.log('✅ WebSocket connected');
+    };
+
+    ws.onerror = (error) => {
+      document.getElementById('status').textContent = 'Connection error';
+      console.error('❌ WebSocket error:', error);
+    };
+
+    ws.onclose = () => {
+      document.getElementById('status').textContent = 'Disconnected';
+      console.log('🔌 WebSocket closed');
+    };
+
+    function sendWebSocketMessage(type, data) {
+      if (ws.readyState === WebSocket.OPEN) {
+        const message = {
+          type,
+          room_id: roomId,
+          user_id: userId,
+          target_id: targetId,
+          data,
+          message_id: crypto.randomUUID(),
+          timestamp: new Date().toISOString()
+        };
+        ws.send(JSON.stringify(message));
+        console.log('📤 Sent:', type);
+      } else {
+        console.error('WebSocket not ready');
+      }
+    }
+
+    document.getElementById('startCall').onclick = async () => {
+      try {
+        document.getElementById('startCall').disabled = true;
+        document.getElementById('hangup').disabled = false;
+
+        localStream = await navigator.mediaDevices.getUserMedia({ 
+          audio: true, 
+          video: { width: 640, height: 480 } // Add video constraints
+        });
+        document.getElementById('localVideo').srcObject = localStream;
+        console.log('🎤🎥 Got local audio/video stream');
+
+        setupPeerConnection();
+
+        if (isOfferer) {
+          localStream.getTracks().forEach(track => {
+            peerConnection.addTrack(track, localStream);
+          });
+
+          const offer = await peerConnection.createOffer();
+          await peerConnection.setLocalDescription(offer);
+          console.log('📞 Created offer');
+
+          sendWebSocketMessage('offer', {
+            sdp: offer.sdp,
+            type: offer.type
+          });
+        }
+      } catch (err) {
+        console.error('❌ Error starting call:', err);
+        document.getElementById('status').textContent = 'Error: ' + err.message;
+      }
+    };
+
+    document.getElementById('hangup').onclick = () => {
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+      }
+
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localStream = null;
+      }
+
+      document.getElementById('localVideo').srcObject = null;
+      document.getElementById('remoteVideo').srcObject = null;
+
+      document.getElementById('startCall').disabled = false;
+      document.getElementById('hangup').disabled = true;
+      document.getElementById('status').textContent = 'Call ended';
+    };
+
+    function setupPeerConnection() {
+      peerConnection = new RTCPeerConnection({
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ]
+      });
+
+      peerConnection.ontrack = (event) => {
+        console.log('🔈🎥 Received remote track');
+        document.getElementById('remoteVideo').srcObject = event.streams[0];
+        document.getElementById('status').textContent = 'Video call connected!';
+      };
+
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          console.log('🧊 Sending ICE candidate');
+          sendWebSocketMessage('ice_candidate', {
+            candidate: event.candidate.candidate,
+            sdpMLineIndex: event.candidate.sdpMLineIndex,
+            sdpMid: event.candidate.sdpMid
+          });
+        }
+      };
+
+      peerConnection.onconnectionstatechange = () => {
+        console.log('🔗 Connection state:', peerConnection.connectionState);
+        document.getElementById('status').textContent = `Connection: ${peerConnection.connectionState}`;
+      };
+    }
+
+    ws.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+      console.log('📩 Received:', msg.type);
+
+      if (msg.type === 'user_joined') {
+        console.log('👋 User joined:', msg.user_id);
+        return;
+      }
+
+      if (!peerConnection) setupPeerConnection();
+
+      try {
+        if (msg.type === 'offer' && !isOfferer) {
+          console.log('📞 Received offer');
+
+          if (!localStream) {
+            localStream = await navigator.mediaDevices.getUserMedia({ 
+              audio: true, 
+              video: { width: 640, height: 480 }
+            });
+            document.getElementById('localVideo').srcObject = localStream;
+            localStream.getTracks().forEach(track => {
+              peerConnection.addTrack(track, localStream);
+            });
+          }
+
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.data));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          console.log('📱 Created answer');
+
+          sendWebSocketMessage('answer', {
+            sdp: answer.sdp,
+            type: answer.type
+          });
+        }
+
+        if (msg.type === 'answer' && isOfferer) {
+          console.log('📱 Received answer');
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(msg.data));
+        }
+
+        if (msg.type === 'ice_candidate') {
+          console.log('🧊 Received ICE candidate');
+          await peerConnection.addIceCandidate(new RTCIceCandidate(msg.data));
+        }
+      } catch (err) {
+        console.error('❌ Error handling message:', err);
+      }
+    };
+  </script>
+</body>
+</html>
