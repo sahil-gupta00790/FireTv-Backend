@@ -11,14 +11,16 @@
           - BUILD_TIME=2025-06-26T19:37:00Z
           - GIT_COMMIT=local
       ports:
-        - "8080:8080"
+        - "80:80"
+        - "443:443"
       environment:
+        - SERVER_HOST=0.0.0.0
         - REDIS_ADDR=redis:6379
         - ENVIRONMENT=development
         - LOG_LEVEL=debug
         - MAX_CONNECTIONS=10000  # Reduced for local testing
         - CONNECTIONS_PER_TASK=1000
-        - DYNAMODB_ENDPOINT=http://host.docker.internal:8000
+        - DYNAMODB_ENDPOINT=http://dynamodb-local:8000
         - AWS_REGION=us-east-1
         - AWS_ACCESS_KEY_ID=dummyKey123
         - AWS_SECRET_ACCESS_KEY=dummySecret123  # Local DynamoDB
@@ -27,6 +29,7 @@
         - dynamodb-local
       volumes:
         - .:/app  # For hot reloading during development
+        - ./certs:/root/certs  
       networks:
         - fire-tv-network
 

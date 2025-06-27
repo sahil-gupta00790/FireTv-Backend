@@ -1,6 +1,8 @@
 module fire-tv-rooms-ecs
 
-go 1.22.5
+go 1.23.0
+
+toolchain go1.23.10
 
 require (
 	github.com/aws/aws-sdk-go v1.55.7
@@ -10,6 +12,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/redis/go-redis/v9 v9.11.0
 	go.uber.org/zap v1.27.0
+	golang.org/x/crypto v0.39.0
 )
 
 require (
@@ -19,5 +22,7 @@ require (
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
-	golang.org/x/sys v0.6.0 // indirect
+	golang.org/x/net v0.21.0 // indirect
+	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/text v0.26.0 // indirect
 )

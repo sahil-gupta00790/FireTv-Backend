@@ -19,6 +19,7 @@ export AWS_SECRET_ACCESS_KEY=dummySecret123
 docker-compose up -d redis redis-commander dynamodb-local
 
 # Wait for DynamoDB to be ready
+
 echo "⏳ Waiting for DynamoDB Local to be ready..."
 for i in {1..10}; do
   if curl -sf http://localhost:8000 > /dev/null; then

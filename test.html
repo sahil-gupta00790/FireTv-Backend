@@ -38,14 +38,14 @@
     const params = new URLSearchParams(window.location.search);
     const userId = params.get('user_id') || prompt("Enter user ID (test1 or test2):");
     const deviceId = params.get('device_id') || `device_${userId}`;
-    const roomId = 'a2afcd86-f312-482b-83e9-1dec3f6589c2';
+    const roomId = '60054f56-f3d2-4295-978c-9bca437ddf31';
     const token = 'test-token';
     const isOfferer = userId === 'test1';
     const targetId = isOfferer ? 'test2' : 'test1';
 
     document.getElementById('userInfo').textContent = `${userId} (${isOfferer ? 'Caller' : 'Receiver'})`;
 
-    const ws = new WebSocket(`ws://localhost:8080/ws?user_id=${userId}&room_id=${roomId}&device_id=${deviceId}&platform=web&token=${token}`);
+    const ws = new WebSocket(`wss://13.233.140.46:8080/ws?user_id=${userId}&room_id=${roomId}&device_id=${deviceId}&platform=web&token=${token}`);
 
     let localStream;
     let peerConnection;

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+
+	"golang.org/x/crypto/acme/autocert"
 
 	"fire-tv-rooms-ecs/internal/config"
 	"fire-tv-rooms-ecs/internal/handlers"
@@ -156,35 +159,50 @@ func initializeApplication(cfg *config.Config) (*Application, error) {
 
 // startHTTPServer starts the HTTP server with proper configuration
 func startHTTPServer(app *Application) *http.Server {
-	// Setup HTTP router with middleware
 	router := setupRouter(app)
 
-	// Configure HTTP server with production settings
-	server := &http.Server{
-		Addr:           fmt.Sprintf("%s:%s", app.Config.Server.Host, app.Config.Server.Port),
-		Handler:        router,
-		ReadTimeout:    app.Config.Server.ReadTimeout,
-		WriteTimeout:   app.Config.Server.WriteTimeout,
-		IdleTimeout:    time.Second * 120,
-		MaxHeaderBytes: 1 << 20, // 1MB
+	// --- 1️⃣  Autocert manager ------------------------------------------
+	m := &autocert.Manager{
+		Prompt:     autocert.AcceptTOS,
+		Cache:      autocert.DirCache("certs"), // <-- persisted via volume
+		HostPolicy: autocert.HostWhitelist("firetcbackend.zapto.org"),
 	}
 
-	// Start server in a goroutine
-	go func() {
-		utils.Info("HTTP server starting",
-			zap.String("address", server.Addr),
-			zap.Duration("read_timeout", server.ReadTimeout),
-			zap.Duration("write_timeout", server.WriteTimeout))
+	// --- 2️⃣  HTTPS server on :443 --------------------------------------
+	server := &http.Server{
+		Addr:         ":443",
+		Handler:      router,
+		ReadTimeout:  app.Config.Server.ReadTimeout,
+		WriteTimeout: app.Config.Server.WriteTimeout,
+		IdleTimeout:  time.Second * 120,
+		TLSConfig: &tls.Config{
+			GetCertificate: m.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
+		},
+	}
 
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			utils.Fatal("HTTP server failed to start", zap.Error(err))
+	// --- 3️⃣  HTTP-01 challenge + redirect 80->443 ----------------------
+	go func() {
+		//  Serve ACME challenge and redirect everything else to HTTPS
+		httpHandler := m.HTTPHandler(http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "https://"+r.Host+r.RequestURI, http.StatusMovedPermanently)
+			}))
+		if err := http.ListenAndServe(":80", httpHandler); err != nil {
+			utils.Fatal("HTTP-01 listener failed", zap.Error(err))
 		}
 	}()
 
-	// Wait a moment to ensure server starts
-	time.Sleep(time.Millisecond * 100)
+	// --- 4️⃣  Start HTTPS server ----------------------------------------
+	go func() {
+		utils.Info("HTTPS server starting", zap.String("address", server.Addr))
+		if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			utils.Fatal("HTTPS server failed", zap.Error(err))
+		}
+	}()
 
 	return server
+
 }
 
 // setupRouter configures the HTTP router with all routes and middleware
