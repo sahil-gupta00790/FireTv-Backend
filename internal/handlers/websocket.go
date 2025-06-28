@@ -65,6 +65,7 @@ type RoomCreateRequest struct {
 // RoomResponse represents a room response
 type RoomResponse struct {
 	ID        string                 `json:"id"`
+	Code      string                 `json:"code"` // Unique 6-digit code
 	Name      string                 `json:"name"`
 	CreatedBy string                 `json:"created_by"`
 	CreatedAt time.Time              `json:"created_at"`
@@ -74,12 +75,25 @@ type RoomResponse struct {
 	Metadata  map[string]interface{} `json:"metadata"`
 }
 
+type RoomJoinRequest struct {
+	RoomID string `json:"room_id" validate:"required"`
+}
+
 // ErrorResponse represents an error response
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Details string `json:"details,omitempty"`
+}
+
+// JoinRoomResponse represents a response for joining a room
+type JoinRoomResponse struct {
+	RoomID   string `json:"room_id"` // Internal UUID, used in WS query
+	Code     string `json:"code"`    // Six-digit human code
+	Name     string `json:"name"`
+	MaxUsers int    `json:"max_users"`
+	IsActive bool   `json:"is_active"`
 }
 
 // HealthResponse represents a health check response
@@ -152,6 +166,39 @@ func NewRequestRateLimiter() *RequestRateLimiter {
 	go rl.cleanupExpiredEntries()
 
 	return rl
+}
+
+// joinRoom handles room-join requests
+func (h *WebSocketHandler) joinRoom(w http.ResponseWriter, r *http.Request) {
+	code := mux.Vars(r)["code"] // comes from /{code}/join
+	if code == "" {
+		h.sendErrorResponse(w, http.StatusBadRequest, "Missing room code", "")
+		return
+	}
+
+	room, err := h.roomService.GetRoomByCode(code)
+	if err != nil {
+		h.sendErrorResponse(w, http.StatusNotFound, "Room not found", "")
+		return
+	}
+	if !room.IsActive {
+		h.sendErrorResponse(w, http.StatusForbidden, "Room is not active", "")
+		return
+	}
+	if h.connectionManager.GetRoomConnectionCount(room.ID) >= room.MaxUsers {
+		h.sendErrorResponse(w, http.StatusForbidden, "Room is full", "")
+		return
+	}
+
+	response := &JoinRoomResponse{
+		RoomID:   room.ID,   // internal UUID, used in WS query
+		Code:     room.Code, // six-digit human code
+		Name:     room.Name,
+		MaxUsers: room.MaxUsers,
+		IsActive: room.IsActive,
+	}
+
+	h.sendJSONResponse(w, http.StatusOK, response)
 }
 
 // IsAllowed checks if a request from the given IP is allowed
@@ -237,6 +284,7 @@ func (h *WebSocketHandler) RegisterRoutes(router *mux.Router) {
 	api.HandleFunc("/rooms/{roomId}", h.getRoom).Methods("GET")
 	api.HandleFunc("/rooms/{roomId}", h.deleteRoom).Methods("DELETE")
 	api.HandleFunc("/rooms", h.listRooms).Methods("GET")
+	api.HandleFunc("/{code}/join", h.joinRoom).Methods("POST")
 
 	// Health check
 	router.HandleFunc("/health", h.healthCheck).Methods("GET")
@@ -495,6 +543,7 @@ func (h *WebSocketHandler) createRoom(w http.ResponseWriter, r *http.Request) {
 	// Send response
 	response := &RoomResponse{
 		ID:        room.ID,
+		Code:      room.Code, // Unique 6-digit code
 		Name:      room.Name,
 		CreatedBy: room.CreatedBy,
 		CreatedAt: room.CreatedAt,

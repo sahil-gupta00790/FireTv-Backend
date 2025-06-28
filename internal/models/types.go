@@ -20,6 +20,7 @@ type Connection struct {
 // Room represents a viewing room
 type Room struct {
 	ID        string                 `json:"id"`
+	Code      string                 `json:"code"` // Unique code for the room
 	Name      string                 `json:"name"`
 	CreatedBy string                 `json:"created_by"`
 	CreatedAt time.Time              `json:"created_at"`

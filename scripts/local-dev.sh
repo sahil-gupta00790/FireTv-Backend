@@ -38,30 +38,33 @@ if aws dynamodb describe-table --table-name fire-tv-rooms \
 else
   echo "📁 Creating DynamoDB table..."
   aws dynamodb create-table \
-      --table-name fire-tv-rooms \
-      --attribute-definitions \
-          AttributeName=id,AttributeType=S \
-          AttributeName=gsi1pk,AttributeType=S \
-          AttributeName=gsi1sk,AttributeType=S \
-      --key-schema \
-          AttributeName=id,KeyType=HASH \
-      --global-secondary-indexes \
-          '[{
-              "IndexName": "GSI1",
-              "KeySchema": [
-                  {"AttributeName": "gsi1pk", "KeyType": "HASH"},
-                  {"AttributeName": "gsi1sk", "KeyType": "RANGE"}
-              ],
-              "Projection": {"ProjectionType": "ALL"},
-              "ProvisionedThroughput": {
-                  "ReadCapacityUnits": 5,
-                  "WriteCapacityUnits": 5
-              }
-          }]' \
-      --billing-mode PAY_PER_REQUEST \
-      --endpoint-url http://localhost:8000 \
-      --region us-east-1
+  --table-name fire-tv-rooms \
+  --attribute-definitions \
+      AttributeName=id,AttributeType=S \
+      AttributeName=code,AttributeType=S \
+      AttributeName=gsi1pk,AttributeType=S \
+      AttributeName=gsi1sk,AttributeType=S \
+  --key-schema AttributeName=id,KeyType=HASH \
+  --global-secondary-indexes \
+    '[
+      { "IndexName":"code-index",
+        "KeySchema":[{"AttributeName":"code","KeyType":"HASH"}],
+        "Projection":{"ProjectionType":"ALL"},
+        "ProvisionedThroughput":{"ReadCapacityUnits":5,"WriteCapacityUnits":5}
+      },
+      { "IndexName":"GSI1",
+        "KeySchema":[{"AttributeName":"gsi1pk","KeyType":"HASH"},
+                     {"AttributeName":"gsi1sk","KeyType":"RANGE"}],
+        "Projection":{"ProjectionType":"ALL"},
+        "ProvisionedThroughput":{"ReadCapacityUnits":5,"WriteCapacityUnits":5}
+      }
+    ]' \
+  --billing-mode PAY_PER_REQUEST \
+  --endpoint-url http://localhost:8000 \
+  --region us-east-1
+
 fi
+
 
 # ✅ Start app container AFTER table exists
 echo "🚀 Starting app container..."

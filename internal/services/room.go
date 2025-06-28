@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,10 +15,12 @@ import (
 	"fire-tv-rooms-ecs/internal/utils"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -76,6 +79,7 @@ type RoomSort struct {
 // DynamoDBRoom represents a room as stored in DynamoDB
 type DynamoDBRoom struct {
 	ID        string                 `dynamodbav:"id"`
+	Code      string                 `dynamodbav:"code"`
 	Name      string                 `dynamodbav:"name"`
 	CreatedBy string                 `dynamodbav:"created_by"`
 	CreatedAt int64                  `dynamodbav:"created_at"`
@@ -157,63 +161,88 @@ func NewRoomService(cfg *config.Config, redisService *RedisService) (*RoomServic
 	return rs, nil
 }
 
+func SixDigitCode() (string, error) {
+	// 000000 – 999999  (1 000 000 possibilities)
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	n := int(b[0])<<16 | int(b[1])<<8 | int(b[2]) // 0 … 16 777 215
+	return fmt.Sprintf("%06d", n%1_000_000), nil
+}
+
 // CreateRoom creates a new room with validation and persistence
+// CreateRoom creates a new room, assigns a 6-digit code, and guarantees uniqueness.
 func (rs *RoomService) CreateRoom(room *models.Room) error {
 	if room == nil {
 		return fmt.Errorf("room cannot be nil")
 	}
-
-	// Validate room
+	// ─── 0.  assign UUID if caller left it empty ─────────────────────
+	if room.ID == "" {
+		room.ID = uuid.NewString()
+	}
+	// ─── 1.  static validation (name, created_by …) ──────────────────
 	if err := rs.validateRoom(room); err != nil {
 		return fmt.Errorf("room validation failed: %w", err)
 	}
-
-	// Check if room already exists
+	// extra-paranoid: ensure the UUID is not reused
 	if _, err := rs.GetRoom(room.ID); err == nil {
 		return fmt.Errorf("room already exists: %s", room.ID)
 	}
 
-	// Set timestamps
+	// ─── 2.  populate server-side fields ─────────────────────────────
 	now := time.Now()
 	room.CreatedAt = now
 	room.UpdatedAt = now
-
-	// Convert to DynamoDB format
-	dynamoRoom := rs.roomToDynamoDB(room)
-
-	// Save to DynamoDB
-	item, err := dynamodbattribute.MarshalMap(dynamoRoom)
-	if err != nil {
-		return fmt.Errorf("failed to marshal room: %w", err)
+	room.IsActive = true
+	if room.Metadata == nil {
+		room.Metadata = map[string]interface{}{}
 	}
 
-	input := &dynamodb.PutItemInput{
-		TableName:           aws.String(rs.config.AWS.DynamoDBTable),
-		Item:                item,
-		ConditionExpression: aws.String("attribute_not_exists(id)"),
+	// ─── 3.  generate unique 6-digit code and write with condition ───
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		code, err := SixDigitCode()
+		if err != nil {
+			return fmt.Errorf("code generation failed: %w", err)
+		}
+		room.Code = code
+
+		// convert & marshal
+		item, _ := dynamodbattribute.MarshalMap(rs.roomToDynamoDB(room))
+		input := &dynamodb.PutItemInput{
+			TableName: aws.String(rs.config.AWS.DynamoDBTable),
+			Item:      item,
+			// uniqueness on *both* id and code
+			ConditionExpression: aws.String(
+				"attribute_not_exists(id) AND attribute_not_exists(code)"),
+		}
+
+		if _, err := rs.dynamoDB.PutItem(input); err != nil {
+			// collision → retry with new code
+			if aerr, ok := err.(awserr.Error); ok &&
+				aerr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
+				continue
+			}
+			// real DynamoDB failure
+			return fmt.Errorf("failed to create room: %w", err)
+		}
+
+		// ─── 4. success → cache + publish and return ─────────────────
+		rs.cacheRoom(room)
+		rs.publishRoomEvent("room_created", room)
+
+		utils.Info("Room created successfully",
+			zap.String("room_id", room.ID),
+			zap.String("code", room.Code),
+			zap.String("name", room.Name),
+			zap.String("created_by", room.CreatedBy),
+			zap.Int("max_users", room.MaxUsers),
+			zap.String("code", room.Code),
+		)
+		return nil
 	}
-
-	_, err = rs.dynamoDB.PutItem(input)
-	if err != nil {
-		utils.Error("Failed to create room in DynamoDB",
-			zap.Error(err),
-			zap.String("room_id", room.ID))
-		return fmt.Errorf("failed to create room: %w", err)
-	}
-
-	// Cache the room
-	rs.cacheRoom(room)
-
-	// Publish room creation event to Redis
-	rs.publishRoomEvent("room_created", room)
-
-	utils.Info("Room created successfully",
-		zap.String("room_id", room.ID),
-		zap.String("name", room.Name),
-		zap.String("created_by", room.CreatedBy),
-		zap.Int("max_users", room.MaxUsers))
-
-	return nil
+	return fmt.Errorf("could not find free 6-digit code after %d attempts", maxAttempts)
 }
 
 // GetRoom retrieves a room by ID with caching
@@ -264,6 +293,28 @@ func (rs *RoomService) GetRoom(roomID string) (*models.Room, error) {
 	rs.cacheRoom(room)
 
 	return room, nil
+}
+
+func (rs *RoomService) GetRoomByCode(code string) (*models.Room, error) {
+	if code == "" {
+		return nil, fmt.Errorf("code is empty")
+	}
+	qi := &dynamodb.QueryInput{
+		TableName:              aws.String(rs.config.AWS.DynamoDBTable),
+		IndexName:              aws.String("code-index"),
+		KeyConditionExpression: aws.String("code = :c"),
+		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+			":c": {S: aws.String(code)},
+		},
+		Limit: aws.Int64(1),
+	}
+	out, err := rs.dynamoDB.Query(qi)
+	if err != nil || len(out.Items) == 0 {
+		return nil, fmt.Errorf("room not found")
+	}
+	var db DynamoDBRoom
+	_ = dynamodbattribute.UnmarshalMap(out.Items[0], &db)
+	return rs.dynamoDBToRoom(&db), nil
 }
 
 // UpdateRoom updates an existing room
@@ -566,6 +617,7 @@ func (rs *RoomService) validateRoom(room *models.Room) error {
 func (rs *RoomService) roomToDynamoDB(room *models.Room) *DynamoDBRoom {
 	return &DynamoDBRoom{
 		ID:        room.ID,
+		Code:      room.Code, // Unique 6-digit code
 		Name:      room.Name,
 		CreatedBy: room.CreatedBy,
 		CreatedAt: room.CreatedAt.Unix(),
@@ -583,6 +635,7 @@ func (rs *RoomService) roomToDynamoDB(room *models.Room) *DynamoDBRoom {
 func (rs *RoomService) dynamoDBToRoom(dynamoRoom *DynamoDBRoom) *models.Room {
 	return &models.Room{
 		ID:        dynamoRoom.ID,
+		Code:      dynamoRoom.Code,
 		Name:      dynamoRoom.Name,
 		CreatedBy: dynamoRoom.CreatedBy,
 		CreatedAt: time.Unix(dynamoRoom.CreatedAt, 0),

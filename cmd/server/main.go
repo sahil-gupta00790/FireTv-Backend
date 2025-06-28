@@ -12,8 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/crypto/acme/autocert"
-
 	"fire-tv-rooms-ecs/internal/config"
 	"fire-tv-rooms-ecs/internal/handlers"
 	"fire-tv-rooms-ecs/internal/services"
@@ -22,6 +20,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 var (
@@ -158,6 +157,7 @@ func initializeApplication(cfg *config.Config) (*Application, error) {
 }
 
 // startHTTPServer starts the HTTP server with proper configuration
+
 func startHTTPServer(app *Application) *http.Server {
 	router := setupRouter(app)
 
@@ -204,6 +204,38 @@ func startHTTPServer(app *Application) *http.Server {
 	return server
 
 }
+
+//func startHTTPServer(app *Application) *http.Server {
+//	// Setup HTTP router with middleware
+//	router := setupRouter(app)
+//
+//	// Configure HTTP server with production settings
+//	server := &http.Server{
+//		Addr:           fmt.Sprintf("%s:%s", app.Config.Server.Host, app.Config.Server.Port),
+//		Handler:        router,
+//		ReadTimeout:    app.Config.Server.ReadTimeout,
+//		WriteTimeout:   app.Config.Server.WriteTimeout,
+//		IdleTimeout:    time.Second * 120,
+//		MaxHeaderBytes: 1 << 20, // 1MB
+//	}
+//
+//	// Start server in a goroutine
+//	go func() {
+//		utils.Info("HTTP server starting",
+//			zap.String("address", server.Addr),
+//			zap.Duration("read_timeout", server.ReadTimeout),
+//			zap.Duration("write_timeout", server.WriteTimeout))
+//
+//		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+//			utils.Fatal("HTTP server failed to start", zap.Error(err))
+//		}
+//	}()
+//
+//	// Wait a moment to ensure server starts
+//	time.Sleep(time.Millisecond * 100)
+//
+//	return server
+//}
 
 // setupRouter configures the HTTP router with all routes and middleware
 func setupRouter(app *Application) *mux.Router {
